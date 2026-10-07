@@ -207,6 +207,9 @@ struct edid {
 #define EDID_PRODUCT_ID(e) ((e)->prod_code[0] | ((e)->prod_code[1] << 8))
 
 struct edid *xenos_get_edid();
+int xenos_edid_supports(struct edid *edid, int w, int h);	/* established/standard/detailed timing lists */
+int xenos_edid_native(struct edid *edid, int *w, int *h);	/* first detailed timing */
+int xenos_edid_cea_vic(struct edid *edid, int vic);	/* CEA-861 video data block */
 BOOL xenos_detect_hdmi_monitor(struct edid *edid);
 
 

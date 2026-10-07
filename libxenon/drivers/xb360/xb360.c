@@ -14,6 +14,8 @@
 #include <xenon_nand/xenon_config.h>
 #include <xenon_soc/xenon_secotp.h>
 #include <xenon_smc/xenon_smc.h>
+#include <xenos/xenos.h>
+#include <xenos/xenos_ana_regs.h>
 #include <crypt/hmac_sha1.h>
 #include <crypt/rc4.h>
 
@@ -640,11 +642,7 @@ int updateXeLL(char *path)
 
 unsigned int xenon_get_DVE()
 {
-	unsigned int DVEversion, tmp;
-	xenon_smc_ana_read(0xfe, &DVEversion);
-	tmp = DVEversion;
-	tmp = (tmp & ~0xF0) | ((DVEversion >> 12) & 0xF0);
-	return (tmp & 0xFF);
+	return xenos_ana_version();
 }
 
 unsigned int xenon_get_PCIBridgeRevisionID()
@@ -666,15 +664,16 @@ unsigned int xenon_get_XenosID()
 
 int xenon_get_console_type()
 {
-	unsigned int PVR, PCIBridgeRevisionID, DVEversion;
+	unsigned int PVR, PCIBridgeRevisionID;
+	enum ana_version DVEversion;
 
 	PCIBridgeRevisionID = xenon_get_PCIBridgeRevisionID();
-	DVEversion = xenon_get_DVE();
+	DVEversion = (enum ana_version)xenon_get_DVE();
 	PVR = xenon_get_CPU_PVR();
 
 	if(PVR <= 0x710300) // DD3 or older CPU, must be a Xenon or Zephyr
 	{
-		if(DVEversion >= 0x11) // We've got HANA, this must be a zephyr
+		if(DVEversion >= ANA_VER_HDMI) // We've got HANA, this must be a zephyr
 		{
 			return REV_ZEPHYR;
 		}
@@ -696,7 +695,7 @@ int xenon_get_console_type()
 	}
 	else if(PVR <= 0x710800) // Vejle CPU, must be Trinity or Corona
 	{
-		if (DVEversion >= 0x20)
+		if (DVEversion >= ANA_VER_KSB)
 		{
 			if (PCIBridgeRevisionID >= 0x70 && sfcx_readreg(SFCX_PHISON) != 0)
 				return REV_CORONA_PHISON;

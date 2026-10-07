@@ -312,3 +312,56 @@ BOOL xenos_detect_hdmi_monitor(struct edid *edid)
 end:
 	return is_hdmi;
 }
+
+static void edid_dtd_size(const struct detailed_timing *d, int *w, int *h)
+{
+	*w = d->data.pixel_data.hactive_lo | ((d->data.pixel_data.hactive_hblank_hi & 0xf0) << 4);
+	*h = d->data.pixel_data.vactive_lo | ((d->data.pixel_data.vactive_vblank_hi & 0xf0) << 4);
+}
+
+int xenos_edid_native(struct edid *edid, int *w, int *h)
+{
+	if (!edid || !edid->detailed_timings[0].pixel_clock)
+		return 0;
+	edid_dtd_size(&edid->detailed_timings[0], w, h);
+	return 1;
+}
+
+int xenos_edid_supports(struct edid *edid, int w, int h)
+{
+	int i, dw, dh;
+	static const int aspect[4][2] = { {10, 16}, {3, 4}, {4, 5}, {9, 16} };	/* v/h */
+
+	if (!edid)
+		return 0;
+	if (w == 640 && h == 480 && (edid->established_timings.t1 & 0x20)) return 1;
+	if (w == 1024 && h == 768 && (edid->established_timings.t2 & 0x40)) return 1;
+	for (i = 0; i < 8; i++) {
+		const struct std_timing *s = &edid->standard_timings[i];
+		int hs = (s->hsize + 31) * 8;
+		if (s->hsize == 0x01 && s->vfreq_aspect == 0x01) continue;
+		if (hs == w && hs * aspect[s->vfreq_aspect >> 6][0] / aspect[s->vfreq_aspect >> 6][1] == h) return 1;
+	}
+	for (i = 0; i < 4; i++) {
+		if (!edid->detailed_timings[i].pixel_clock) continue;
+		edid_dtd_size(&edid->detailed_timings[i], &dw, &dh);
+		if (dw == w && dh == h) return 1;
+	}
+	return 0;
+}
+
+int xenos_edid_cea_vic(struct edid *edid, int vic)
+{
+	int i, n, e;
+	if (!edid) return 0;
+	for (e = 0; e < edid->extensions && e < MAX_EDID_EXT_NUM; e++) {
+		unsigned char *x = (unsigned char *)edid + EDID_LENGTH * (e + 1);
+		if (x[0] != 0x02) continue;
+		for (i = 4; i < x[2]; i += (x[i] & 0x1f) + 1) {
+			if ((x[i] >> 5) != 2) continue;	/* video data block */
+			for (n = 1; n <= (x[i] & 0x1f); n++)
+				if ((x[i + n] & 0x7f) == vic) return 1;
+		}
+	}
+	return 0;
+}
