@@ -1,4 +1,4 @@
-/* Hana/ANA (DVE) register names. */
+/* Hana/ANA (DVE) register names. Evidence: xboxkrnl function names + decoded formulas (see RESEARCH.md). */
 #ifndef ANA_REGS_H
 #define ANA_REGS_H
 
@@ -63,7 +63,10 @@
 #define ANA_DAC_PWR       0xd7          /* 0xff / 0x7f (down), |0x80 */
 #define ANA_DAC_EN        0xd8          /* 7 VGA, 0xb/0xf TV, 0x1f KSB */
 #define ANA_POWER         0xd9          /* bit18: powered down */
-#define ANA_DF            0xdf
+#define ANA_SPDIF_EN      0xdf          /* 1 = S/PDIF output enabled (kernel VdDriverEntry / DAC request) */
+#define   ANA_SPDIF_OFF   0
+#define   ANA_SPDIF_ON    1
+#define ANA_DF            ANA_SPDIF_EN
 #define ANA_DAC_CAL0      0xf0          /* KSB 0x0291028e, bit31 pulse */
 #define ANA_DAC_CAL1      0xf1          /* KSB 0x028e0285 */
 #define ANA_HDCP_KEY0     0xfc

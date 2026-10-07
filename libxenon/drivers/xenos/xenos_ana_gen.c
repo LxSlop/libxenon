@@ -306,3 +306,69 @@ void ana_timing_crtc(int i, int hdmi, int *tw, int *th, int *hoff, int *voff)
 	*tw = ana_timing_geo[i].tw; *th = ana_timing_geo[i].th; *voff = ana_timing_geo[i].voff;
 	*hoff = hdmi ? ana_timing_geo[i].hoff_hdmi : ana_timing_geo[i].hoff_analog;
 }
+
+uint32_t ana_dve_cntl_tv(int entry) { return ana_grp_smb[ana_tv_entries[entry].grp][8]; }
+
+static void lane_pwr(const struct ana_ops *o, uint8_t v)
+{
+	I2C(ANA_I2C_LANE_PWR1, v); I2C(ANA_I2C_LANE_PWR2, v); I2C(ANA_I2C_LANE_PWR3, v); I2C(ANA_I2C_LANE_PWR0, v);
+}
+
+void ana_display_off(const struct ana_ops *o, int ver, int port)
+{
+	uint32_t v = o->smb_rd(o->ctx, ANA_DVE_CNTL) & ~ANA_CNTL_OUTPUTS;
+	if (port == ANA_PORT_HDMI) v &= ~0x200u;
+	SMB(ANA_DVE_CNTL, v);
+	if (ver >= ANA_VER_KSB && port == ANA_PORT_HDMI) lane_pwr(o, 0x10);
+}
+
+void ana_display_on(const struct ana_ops *o, uint32_t cntl, int ver, int port, int avpack, int submode)
+{
+	if (port == ANA_PORT_ANALOG && avpack == 5 && (submode & 1)) cntl &= ~6u;
+	if (port == ANA_PORT_HDMI) cntl |= 0x200;
+	SMB(ANA_DVE_CNTL, cntl);
+	if (ver >= ANA_VER_KSB && port == ANA_PORT_HDMI) lane_pwr(o, 0);
+}
+
+uint32_t ana_dve_sync_tv(int entry) { return ana_grp_dvo[ana_tv_entries[entry].grp][7] | 0x300; }
+uint32_t ana_dve_sync_dyn(const uint8_t *vt, int port) { return sync_cntl(vt, port); }
+
+int ana_spdif_enabled(int trinity_plus, int avpack, int digital_en, int submode)
+{
+	if (trinity_plus) return 1;
+	if (!digital_en) return 0;
+	return !(avpack == 5 && (submode & 2));
+}
+
+int ana_dac_clamped(const struct ana_dac_cfg *c)
+{
+	if (c->hpd) return c->analog_unclamp == 0;
+	return c->digital_en == 0 || c->avpack == 4;
+}
+
+void ana_dac_request(const struct ana_ops *o, const struct ana_dac_cfg *c)
+{
+	static const uint8_t reg[7] = { ANA_DVE_CNTL, ANA_SYNC_CNTL, ANA_SPDIF_EN, 0, 0, 0, 0 };
+	static const uint16_t lane[4] = { ANA_I2C_LANE_PWR1, ANA_I2C_LANE_PWR2, ANA_I2C_LANE_PWR3, ANA_I2C_LANE_PWR0 };
+	int n = c->ver >= ANA_VER_KSB ? 7 : c->ver >= ANA_VER_HDMI ? 3 : 2, i, clamp = ana_dac_clamped(c);
+	int spdif = ana_spdif_enabled(c->trinity_plus, c->avpack, c->digital_en, c->submode);
+
+	for (i = 0; i < n; i++) {
+		uint32_t v = 0;
+		int on = !clamp;			/* value written as-is when set, masked when clear */
+		if (i == 0) {
+			v = c->cntl;
+			if (c->avpack == 5 && (c->submode & 2)) v &= ~6u;
+		} else if (i == 1) v = c->sync;
+		else if (i == 2) { v = ANA_SPDIF_ON; on = spdif; }
+		if (!on) {
+			v &= i == 0 ? 0xe1 : i == 1 ? 0xffffff07 : 0;
+			if (c->port == ANA_PORT_HDMI) {
+				if (i == 0) v &= ~0x200u;
+				if (i >= 3) v |= 0x10;
+			}
+		}
+		if (i < 3) SMB(reg[i], v);
+		else I2C(lane[i - 3], v);
+	}
+}

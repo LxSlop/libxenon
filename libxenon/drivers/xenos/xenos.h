@@ -73,6 +73,7 @@ extern "C" {
 #define	D1COLOR_MATRIX_COEF_3_4        0x63b0
 
 int xenos_is_initialized();
+void xenos_clamp_dacs(int clamp);	/* mask (1) / restore (0) the analog outputs; HDMI lanes follow */
 int xenos_ana_version(void);	/* DVE version from ANA register 0xfe: 0x01 old, 0x11 HDMI Hana, 0x23 Corona */
 void xenos_hdmi_audio_enable(void);	/* HDMI TX audio setup for the active mode (needs an HDMI sink) */
 extern int xenos_hdmi_sink;

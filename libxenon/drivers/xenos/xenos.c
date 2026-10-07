@@ -29,10 +29,15 @@
 #define GPU_CRTC_RESET_STATUS  0x281c	/* bit1 = reset acknowledged */
 #define   CRTC_RESET_ACK         0x2
 #define GPU_ANA_PWRDOWN_HOLD   0x04a0	/* 0x100 written between power-down and ANA init (kernel) */
+#define GPU_CLOCK_GATING0      0x0204
+#define GPU_CLOCK_GATING1      0x0208
+#define GPU_MODE_LOCK          0x60e0	/* 1 while a mode change is in progress (kernel VdSetDisplayMode) */
+#define GPU_FORCE_DATA_COLOR   0x793c	/* 0x200 YCbCr, 0 RGB */
 #define XENOS_GPIO_VIDEO_MASK  0x2000	/* HalGpioControl(4|5, 0x2000, 0x2000) after mode set */
 #define XENOS_MODE_SWITCH_MS   350	/* kernel: >= 350 ms between ANA power-down and re-init */
 
-u32 xenos_id = 0; // 5841=slim, 5831=jasper, 5821=zephyr/falcon?, 5811=xenon?
+u32 xenos_id = 0; // 5841=slim (trinity, corona), 5831=jasper, 5821=zephyr/falcon?, 5811=xenon?, 5851=winchester
+static u32 xenos_asic = 0;	/* kernel VdpGraphicsAsicID: (device id << 16) | PCI revision */
 int xenos_hdmi_sink = 0;	/* EDID says the sink is an HDMI (not DVI) monitor */
 int xenos_is_corona = 0;
 int xenos_black_level = 0;	/* XConfig VideoOutputBlackLevels: 0..2 */
@@ -58,6 +63,7 @@ struct mode_s
 	int overscan;
 	uint32_t scl_tap, scl_65b8, scl_65c8;	/* display scaler constants (VdInitializeScaler, 1:1) */
 	int pix_khz;		/* digital modes: achieved pixel clock */
+	uint32_t sync_cntl;	/* ANA_SYNC_CNTL value of the mode (needed to re-apply DAC state) */
 	int hz;
 };
 
@@ -126,7 +132,9 @@ static int isCoronaOrWinchester()
 /* ---- ANA / HDMI TX access glue -------------------------------------------------------------- */
 static void g_smb(void *c, uint8_t r, uint32_t v) { xenon_smc_ana_write(r, v); }
 static uint32_t g_smb_rd(void *c, uint8_t r) { uint32_t v = 0; xenon_smc_ana_read(r, &v); return v; }
-static void g_xdvo(void *c, uint8_t r, uint32_t v) { if (xenos_id == 0x5851) xenon_smc_ana_write(r, v); else xenos_ana_write(r, v); }
+/* kernel VdpWriteXDVOUlong: DVE registers go over the SMC for ASIC 0x58510000 (Winchester rev 0) and Corona with eMMC; everyone else uses the GPU window */
+static int xenos_xdvo_via_smc(void) { return xenos_asic == 0x58510000 || xenon_get_console_type() == REV_CORONA_PHISON; }
+static void g_xdvo(void *c, uint8_t r, uint32_t v) { if (xenos_xdvo_via_smc()) xenon_smc_ana_write(r, v); else xenos_ana_write(r, v); }
 static void g_i2c(void *c, uint16_t r, uint8_t v) { xenon_smc_i2c_write(r, v); }
 static void g_delay(void *c, uint32_t us) { udelay(us); }
 static void g_gpu(void *c, uint32_t o, uint32_t v) { xenos_write32(o, v); }
@@ -157,17 +165,31 @@ void xenos_hdmi_audio_enable(void)
 void xenos_init_phase0(void)
 {
 	xenos_write32(0xe0, 0x10000000);
-	xenos_write32(0xec, 0xffffffff);
+	xenos_write32(0xec, 0xffff);	/* 16 bit register: kernel writes 0xffff and checks the read-back */
 
 	xenos_write32(0x1724, 0);
 	int i;
 	for (i = 0; i < 8; ++i)
 	{
-		int addr[] = {0x8000, 0x8c60, 0x8008, 0x8004, 0x800c, 0x8010, 0x8014, 0x880c, 0x8800, 0x8434, 0x8820, 0x8804, 0x8824, 0x8828, 0x882c, 0x8420, 0x841c, 0x841c, 0x8418, 0x8414, 0x8c78, 0x8c7c, 0x8c80};
+		/* kernel VdpInitialStateRegisterConfig list (0x8014 is written twice there) */
+		int addr[] = {0x8000, 0x8c60, 0x8008, 0x8004, 0x800c, 0x8010, 0x8014, 0x8014, 0x880c, 0x8800, 0x8434, 0x8820, 0x8804, 0x8824, 0x8828, 0x882c, 0x8420, 0x841c, 0x8418, 0x8414, 0x8c78, 0x8c7c, 0x8c74};
 		int j;
 		for (j = 0; j < 23; ++j)
 			xenos_write32(addr[j] + i * 0x1000, 0);
 	}
+}
+
+/* kernel VdEnableDisableClockGating(1): gating masks by ASIC. Only Jasper (5831) gets the 0x903ff006 / 0x3fc7c2 set;
+ * Xenon 0x4000300, everything else (Falcon, Trinity, Corona, Winchester) 0x4400380; 0x208 = 0x180002 otherwise. */
+static void xenos_clock_gating(void)
+{
+	uint32_t r204 = xenos_asic < 0x58210000 ? 0x4000300 : 0x4400380, r208 = 0x180002;
+	if (xenos_asic - 0x58310000 <= 0xfffff) {
+		r204 |= 0x903ff006;
+		r208 = 0x3fc7c2;
+	}
+	xenos_write32(GPU_CLOCK_GATING0, r204);
+	xenos_write32(GPU_CLOCK_GATING1, r208);
 }
 
 void xenos_init_phase1(void)
@@ -217,10 +239,7 @@ void xenos_init_phase1(void)
 	xenos_write32(0x3c04, 0xe);
 	xenos_write32(0x00f4, 4);
 	
-	if (xenos_id>=0x5841){
-		xenos_write32(0x0204, 0x947FF386);
-		xenos_write32(0x0208, 0x3FC7C2);
-	}else{
+	if (xenos_id < 0x5841) {
 		int gpu_clock = xenos_read32(0x0210);
 		int mem_clock = xenos_read32(0x284);
 		int edram_clock = xenos_read32(0x244);
@@ -231,9 +250,8 @@ void xenos_init_phase1(void)
 		printf("EDRAM Clock at %d MHz\n", 100 * ((edram_clock & 0xfff)+1) / (((edram_clock >> 12) & 0x3f)+1));
 		printf("FSB Clock at %d MHz\n", 100 * ((fsb_clock & 0xfff)+1) / (((fsb_clock >> 12) & 0x3f)+1));
 
-		xenos_write32(0x0204, (xenos_id<0x5821)?0x4000300:0x4400380);
-		xenos_write32(0x0208, 0x180002);
 	}
+	xenos_clock_gating();
 	
 	xenos_write32(0x01a8, 0);
 	xenos_write32(0x0e6c, 0x0c0f0000);
@@ -262,12 +280,10 @@ void xenos_init_phase1(void)
 }
 
 
+/* kernel VdpTurnDisplayOffInternal: outputs off for the port of the mode being left */
 static void xenos_ana_stop_display(void)
 {
-	uint32_t tmp;
-	xenon_smc_ana_read(ANA_DVE_CNTL, &tmp);
-	tmp &= ~ANA_CNTL_OUTPUTS;
-	xenon_smc_ana_write(ANA_DVE_CNTL, tmp);
+	ana_display_off(&xenos_ana_ops, xenos_ana_version(), xenos_current_mode && xenos_current_mode->hdmi);
 }
 
 /* kernel VdpPowerDownANA */
@@ -414,9 +430,7 @@ static int xenos_build_mode(int id, struct mode_s *m)
 	m->hdmi = m->kind == XM_HDMI;
 	if (m->kind == XM_TV) {
 		int e = ana_pick_tv(xenos_region(m->name), xenon_smc_read_avpack(), w, h, il, m->hz);
-		if (e < 0)	/* mode not offered for this AV pack: use the component-pack variant */
-			e = ana_pick_tv(xenos_region(m->name), 0x0f, w, h, il, m->hz);
-		if (e < 0)
+		if (e < 0)	/* not offered for this AV pack (e.g. HD on a composite pack) */
 			return -1;
 		m->ana_idx = e;
 		ana_tv_geo(e, &m->total_width, &m->total_height, &m->hsync_offset, &m->vsync_offset);
@@ -446,6 +460,7 @@ static int xenos_ana_apply(struct mode_s *m)
 
 	if (m->kind == XM_TV) {
 		ana_gen_tv(&xenos_ana_ops, m->ana_idx, ver, bl);
+		m->sync_cntl = ana_dve_sync_tv(m->ana_idx);
 	} else {
 		uint8_t vt[76], rnd[8];
 		int i, dtype = m->hdmi ? 3 : 1, port = m->hdmi ? ANA_PORT_HDMI : ANA_PORT_ANALOG;
@@ -458,9 +473,51 @@ static int xenos_ana_apply(struct mode_s *m)
 		for (i = 0; i < 8; i++)
 			rnd[i] = mftb() >> (i * 3);	/* HDCP An seed */
 		ana_gen_dyn(&xenos_ana_ops, vt, ver, port, dtype, bl, rnd);
+		m->sync_cntl = ana_dve_sync_dyn(vt, port);
 		ana_gen_csc_vga(&xenos_ana_ops, bl);
 	}
 	return 0;
+}
+
+/* kernel HalGetCurrentAVPack: the SMC pack type, or 4 (8 for type 7) when a sink raises HPD on an HDMI-capable console */
+static int xenos_kernel_avpack(int raw)
+{
+	int type = SMC_AVPACK_TYPE(raw);
+	return (xenos_ana_version() >= ANA_VER_HDMI && SMC_AVPACK_HPD(raw)) ? (type == 7 ? 8 : 4) : type;
+}
+
+static uint32_t xenos_dve_cntl(struct mode_s *m)
+{
+	return m->kind == XM_TV ? ana_dve_cntl_tv(m->ana_idx) : m->hdmi ? ANA_DVE_CNTL_HDMI : ANA_DVE_CNTL_VGA;
+}
+
+/* kernel HalClampUnclampOutputDACs: clamp masks the analog outputs (and powers the HDMI lanes down), unclamp restores them;
+ * also writes ANA_SPDIF_EN. Applies to the active mode. */
+void xenos_clamp_dacs(int clamp)
+{
+	int raw = xenon_smc_read_avpack(), avpack = xenos_kernel_avpack(raw);
+	struct ana_dac_cfg c;
+	if (!xenos_current_mode)
+		return;
+	c.ver = xenos_ana_version();
+	c.port = xenos_current_mode->hdmi;
+	c.avpack = avpack;
+	c.submode = SMC_AVPACK_SUBMODE(raw);
+	c.hpd = c.ver >= ANA_VER_HDMI && SMC_AVPACK_HPD(raw);
+	c.analog_unclamp = c.digital_en = !clamp;
+	c.trinity_plus = xenon_get_console_type() >= REV_TRINITY;
+	c.cntl = xenos_dve_cntl(xenos_current_mode);
+	c.sync = xenos_current_mode->sync_cntl;
+	ana_dac_request(&xenos_ana_ops, &c);
+}
+
+/* kernel VdDriverEntry: S/PDIF output follows the pack / console (HDMI-capable DVE only) */
+static void xenos_spdif_init(void)
+{
+	int raw = xenon_smc_read_avpack(), avpack = xenos_kernel_avpack(raw);
+	if (xenos_ana_version() < ANA_VER_HDMI)
+		return;
+	xenon_smc_ana_write(ANA_SPDIF_EN, ana_spdif_enabled(xenon_get_console_type() >= REV_TRINITY, avpack, !(avpack == 7 || avpack == 8), SMC_AVPACK_SUBMODE(raw)) ? ANA_SPDIF_ON : ANA_SPDIF_OFF);
 }
 
 static void xenos_set_gpio_video(struct mode_s *m)
@@ -483,6 +540,7 @@ int xenos_set_mode(struct mode_s *mode)
 		udelay(xenos_frame_us(mode));
 	}
 	xenos_write32(GPU_ANA_CTRL, xenos_read32(GPU_ANA_CTRL) | 1);
+	xenos_write32(GPU_MODE_LOCK, 1);	/* kernel VdSetDisplayMode: held while timing/CSC are reprogrammed */
 	xenos_write32(0x06ac, 1);
 
 	printf(" . ana disable\n");
@@ -513,8 +571,9 @@ int xenos_set_mode(struct mode_s *mode)
 		xenos_write32(D1CRTC_MVP_CONTROL2, 0x20010200);
 		xenos_write32(D1CRTC_MVP_FIFO_CONTROL, 0x20010200);
 	}
-	xenos_write32(0x793c, 0);
-	xenos_write32(GPU_ANA_CTRL, 0x700);
+	/* kernel VdpInitializeForceDataColor: RGB forces data colour 7 / 0, YCbCr 5 / 0x200 (bits 8-10 of the ANA control) */
+	xenos_write32(GPU_FORCE_DATA_COLOR, mode->rgb ? 0 : 0x200);
+	xenos_write32(GPU_ANA_CTRL, (xenos_read32(GPU_ANA_CTRL) & ~0x701) | (mode->rgb ? 0x700 : 0x500));
 
 
 	xenos_write32(AVIVO_D1CRTC_V_BLANK_START_END, 0x04010040);
@@ -536,12 +595,17 @@ int xenos_set_mode(struct mode_s *mode)
 		xenos_write32(0x63b4, 0x00000000);
 	}
 
-	if (mode->hdmi) xenon_smc_ana_write(ANA_DVE_CNTL, ANA_CNTL_HDMI_ON);
 	xenos_set_gpio_video(mode);
 	if (mode->kind == XM_TV)	/* TV black level / range regs (kernel does this after the timing) */
 		ana_gen_csc_tv(&xenos_ana_ops, mode->ana_idx, ana_avpack(xenon_smc_read_avpack()), xenos_black_level, xenos_ana_version());
 
-	xenos_current_mode = mode;
+	xenos_write32(GPU_MODE_LOCK, 0);
+	{	/* kernel VdpTurnDisplayOnInternal: composite pack without HPD and sub mode bit0 drops DAC enables 1-2 */
+		int raw = xenon_smc_read_avpack(), avpack = xenos_kernel_avpack(raw);
+		uint32_t cntl = xenos_dve_cntl(mode);
+		xenos_current_mode = mode;
+		ana_display_on(&xenos_ana_ops, cntl, xenos_ana_version(), mode->hdmi, avpack, raw & 3);
+	}
 	if (hdmi_on) {
 		hdmi_send_avi_rgb(&xenos_hdmi_ops, hdmi_cea_vic(mode->real_active_width, mode->active_height * (mode->is_progressive ? 1 : 2), !mode->is_progressive, mode->hz), mode->real_active_width * 9 == mode->active_height * 16, 1);
 		hdmi_send_spd(&xenos_hdmi_ops);
@@ -582,11 +646,17 @@ static int xenos_pick_vga(struct edid *e)
 	return VIDEO_MODE_VGA_640x480;
 }
 
-/* AV pack byte: [1:0] sub mode, [4:2] pack, bit6 = no hot-plug (kernel HalpHPDDetected = !bit6) */
+/* AV pack (SMC byte, kernel HalpReadCurrentAVPack/VdpEDIDDiscovery): type = bits 4:2, bit6 = no hot-plug.
+ * HDMI-capable consoles (DVE >= 0x11) report a sink via HPD whatever the pack type; type 6 is VGA; type 3 is
+ * component (HD); everything else (composite, S-video, SCART, HDMI pack without a sink) is the region's TV mode.
+ * Raw bytes seen in the field: 0x43/0x47/0x54/0x57 TV, 0x0c/0x0f/0x4f component, 0x59/0x5b VGA,
+ * 0x13/0x14/0x1c/0x1e/0x1f HDMI with sink, 0x1b VGA adapter that raises HPD. */
 static int xenos_pick_auto_mode(void)
 {
 	int mode;
 	int avpack = xenon_smc_read_avpack();
+	int type = SMC_AVPACK_TYPE(avpack);
+	int hpd = xenos_ana_version() >= ANA_VER_HDMI && SMC_AVPACK_HPD(avpack);
 
 	switch (xenon_config_get_avregion())
 	{
@@ -605,35 +675,14 @@ static int xenos_pick_auto_mode(void)
 
 	printf("AVPACK detected: %02x\n", avpack);
 
-	switch (avpack)
-	{
-	case 0x13: // HDMI_AUDIO
-	case 0x14: // HDMI_AUDIO - GHETTO MOD
-	case 0x1C: // HDMI_AUDIO - GHETTO MOD
-	case 0x1E: // HDMI
-	case 0x1F: // HDMI
+	if (hpd || type == 6) {
+		int digital;
 		xenos_edid = xenos_get_edid();
-		mode = (xenos_edid && !(xenos_edid->input & DRM_EDID_INPUT_DIGITAL)) ? xenos_pick_vga(xenos_edid) : xenos_pick_hdmi(xenos_edid);
-		break;
-	case 0x43: // COMPOSITE - TV MODE
-	case 0x47: // SCART
-	case 0x54: // COMPOSITE + S-VIDEO
-	case 0x57: // NORMAL COMPOSITE
-		break;
-	case 0x0C: // COMPONENT
-	case 0x0F: // COMPONENT
-	case 0x4F: // COMPOSITE - HD MODE
+		digital = xenos_edid && (xenos_edid->input & DRM_EDID_INPUT_DIGITAL);
+		/* digital sink, or a sink-less HDMI pack: HDMI port; analog EDID / VGA pack: VGA */
+		mode = (digital || (!xenos_edid && hpd && type != 6)) ? xenos_pick_hdmi(xenos_edid) : xenos_pick_vga(xenos_edid);
+	} else if (type == 3)
 		mode = VIDEO_MODE_YUV_720P;
-		break;
-	case 0x5B: // VGA
-	case 0x59: // also vga
-	case 0x1B: // this fixes a generic vga adapter, was under HDMI
-		xenos_edid = xenos_get_edid();
-		mode = (xenos_edid && (xenos_edid->input & DRM_EDID_INPUT_DIGITAL)) ? xenos_pick_hdmi(xenos_edid) : xenos_pick_vga(xenos_edid);
-		break;
-	default:
-		break;
-	}
 
 	return mode;
 }
@@ -641,6 +690,7 @@ static int xenos_pick_auto_mode(void)
 void xenos_init(int videoMode)
 {
 	xenos_id = xenon_get_XenosID();
+	xenos_asic = (xenos_id << 16) | (read32(0xd0010008) & 0xff);
 	printf("Xenos GPU ID=%04x\n", (unsigned int)xenos_id);
 
 	xenos_is_corona = isCoronaOrWinchester();
@@ -672,7 +722,7 @@ void xenos_init(int videoMode)
 	if (xenos_set_mode(&xenos_mode_cur))
 		return;
 
-	xenon_smc_ana_write(ANA_DF, 0);
+	xenos_spdif_init();
 
 	xenos_hdmi_audio_enable();
 

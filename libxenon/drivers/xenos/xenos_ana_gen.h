@@ -59,4 +59,26 @@ const uint8_t *ana_timing_blob(int idx);
 void ana_tv_geo(int entry, int *tw, int *th, int *hoff, int *voff);
 void ana_timing_crtc(int idx, int hdmi_port, int *tw, int *th, int *hoff, int *voff);
 
+/* VdpTurnDisplayOffInternal / VdpTurnDisplayOnInternal. cntl = value of GET_DVE_CNTL (ana_dve_cntl_*), avpack = kernel
+ * HalGetCurrentAVPack() (5 = composite pack without HPD), submode = SMC avpack byte & 3 */
+void ana_display_off(const struct ana_ops *o, int ver, int port);
+void ana_display_on(const struct ana_ops *o, uint32_t cntl, int ver, int port, int avpack, int submode);
+uint32_t ana_dve_cntl_tv(int entry);      /* table modes: last SMB word of the entry */
+#define ANA_DVE_CNTL_VGA  ANA_CNTL_VGA
+#define ANA_DVE_CNTL_HDMI ANA_CNTL_HDMI_ON
+
+/* DAC clamp / unclamp request (kernel VdBuildDACsEnableDisableCommand, one SMC write per step: DVE_CNTL, SYNC_CNTL,
+ * SPDIF_EN [ver>=0x11], 4 HDMI lane regs [ver>=0x20]). clamp = analog outputs masked / lanes off.
+ * avpack = kernel HalGetCurrentAVPack() (4/8 = sink present), submode = SMC byte & 3, hpd = HalpHPDDetected,
+ * state bits: analog_unclamp (state[1] bit1), digital_en (state[1] bit2). SCART GPIO / SCART WSS side effects are not ported. */
+struct ana_dac_cfg {
+	int ver, port, avpack, submode, hpd, analog_unclamp, digital_en, trinity_plus;
+	uint32_t cntl, sync;     /* GET_DVE_CNTL / GET_DVE_SYNCCNTL of the active mode */
+};
+int  ana_spdif_enabled(int trinity_plus, int avpack, int digital_en, int submode);
+int  ana_dac_clamped(const struct ana_dac_cfg *c);
+void ana_dac_request(const struct ana_ops *o, const struct ana_dac_cfg *c);
+uint32_t ana_dve_sync_tv(int entry);                       /* table modes */
+uint32_t ana_dve_sync_dyn(const uint8_t *vt, int port);    /* generic modes */
+
 #endif
