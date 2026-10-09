@@ -737,7 +737,9 @@ int link(const char *existing, const char *new) {
 
 	ret = -1;
 
-	if (sourceDev == destDev) {
+	if (sourceDev == -1 || destDev == -1) {
+		r->_errno = ENODEV;
+	} else if (sourceDev == destDev) {
 		if (devoptab_list[destDev]->link_r) {
 			ret = devoptab_list[destDev]->link_r(r, existing, new);
 		} else {
@@ -793,7 +795,9 @@ int rename(const char *existing, const char *newName) {
 
 	ret = -1;
 
-	if (sourceDev == destDev) {
+	if (sourceDev == -1 || destDev == -1) {
+		r->_errno = ENODEV;
+	} else if (sourceDev == destDev) {
 		if (devoptab_list[destDev]->rename_r) {
 			ret = devoptab_list[destDev]->rename_r(r, existing, newName);
 		} else {
@@ -1266,7 +1270,9 @@ int mkdir(const char *path, mode_t mode) {
 	int dev = FindDevice(path);
 	ret = -1;
 
-	if (devoptab_list[dev]->mkdir_r) {
+	if (dev == -1) {
+		r->_errno = ENODEV;
+	} else if (devoptab_list[dev]->mkdir_r) {
 		ret = devoptab_list[dev]->mkdir_r(r, path, mode);
 	} else {
 		r->_errno = ENOSYS;
