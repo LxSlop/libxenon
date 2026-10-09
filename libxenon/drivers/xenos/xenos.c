@@ -93,6 +93,7 @@ static const struct { const char *name; int kind, w, h, il, hz; } xenos_mode_def
 };
 
 static struct mode_s xenos_mode_cur;
+static int xenos_cur_id = -1;
 static struct mode_s * xenos_current_mode = NULL;
 
 void xenos_write32(int reg, uint32_t val)
@@ -721,12 +722,61 @@ void xenos_init(int videoMode)
 	}
 	if (xenos_set_mode(&xenos_mode_cur))
 		return;
+	xenos_cur_id = videoMode;
 
 	xenos_spdif_init();
 
 	xenos_hdmi_audio_enable();
 
 	printf("Video Mode: %s\n", xenos_current_mode->name);
+}
+
+/* ---- switching the video mode of a running application ---- */
+int xenos_video_mode_count(void)
+{
+	return VIDEO_MODE_COUNT;
+}
+
+const char *xenos_video_mode_name(int id)
+{
+	return id >= 0 && id < VIDEO_MODE_COUNT ? xenos_mode_defs[id].name : NULL;
+}
+
+/* framebuffer size of a mode; -1 if the mode is not offered for this AV pack / region */
+int xenos_video_mode_size(int id, int *width, int *height)
+{
+	struct mode_s m;
+
+	if (id < 0 || id >= VIDEO_MODE_COUNT || xenos_build_mode(id, &m))
+		return -1;
+	*width = m.width;
+	*height = m.height * (m.is_progressive ? 1 : 2);
+	return 0;
+}
+
+int xenos_video_mode_current(void)
+{
+	return xenos_cur_id;
+}
+
+/* build and apply mode id; the caller resizes its framebuffer afterwards. 0 on success */
+int xenos_video_mode_set(int id)
+{
+	struct mode_s m;
+
+	if (id < 0 || id >= VIDEO_MODE_COUNT || xenos_build_mode(id, &m))
+		return -1;
+	xenos_mode_cur = m;
+	if (xenos_mode_cur.hdmi) {
+		if (!xenos_edid)
+			xenos_edid = xenos_get_edid();
+		xenos_hdmi_sink = xenos_detect_hdmi_monitor(xenos_edid);
+	}
+	if (xenos_set_mode(&xenos_mode_cur))
+		return -1;
+	xenos_cur_id = id;
+	xenos_hdmi_audio_enable();
+	return 0;
 }
 
 int xenos_is_overscan()
