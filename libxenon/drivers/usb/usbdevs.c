@@ -46,16 +46,7 @@
     *     THE POSSIBILITY OF SUCH DAMAGE.
     ********************************************************************* */
 
-#ifndef _CFE_
-#include <stdio.h>
-#include <memory.h>
-#include <stdint.h>
-#include "usbhack.h"
-#include "lib_malloc.h"
-#include "lib_queue.h"
-#else
 #include "cfe.h"
-#endif
 
 #include "usbchap9.h"
 #include "usbd.h"
@@ -68,15 +59,6 @@
 extern usb_driver_t usbhub_driver;
 extern usb_driver_t usbhid_driver;
 extern usb_driver_t usbctrl_driver;
-#ifdef USB11_MASS_STORAGE
-extern usb_driver_t usbmass_driver;
-#endif
-extern usb_driver_t usbserial_driver;
-extern usb_driver_t usbpeg_driver;
-extern usb_driver_t usbcatc_driver;
-extern usb_driver_t usbrtek_driver;
-extern usb_driver_t usbklsi_driver;
-extern usb_driver_t usbasix_driver;
 extern usb_driver_t dummy_driver;
 
 usb_drvlist_t usb_drivers[] = {
@@ -99,44 +81,6 @@ usb_drvlist_t usb_drivers[] = {
     {CLASS_ANY, 0x045e,0x2b0,   &dummy_driver}, // Kinect, not handled so we load a dummy drive
     {CLASS_ANY,	0x1bad,0xf900,	&usbctrl_driver}, // PDP Afterglow controller
     {CLASS_ANY,	0x045e,0x28f,	&dummy_driver}, // play and charge kit, not a controller - let's ignore it
-
-    /*
-     * Mass storage devices
-     */
-
-#ifdef USB11_MASS_STORAGE
-    {USB_DEVICE_CLASS_STORAGE,	VENDOR_ANY,	PRODUCT_ANY,	&usbmass_driver},
-#endif
-    
-#if 0
-    /*
-     * Serial ports
-     */
-
-    {USB_DEVICE_CLASS_VENDOR_SPECIFIC,0x557,0x2008,&usbserial_driver},
-    {USB_DEVICE_CLASS_VENDOR_SPECIFIC,0x50D,0x0109,&usbserial_driver},
-    {USB_DEVICE_CLASS_VENDOR_SPECIFIC,0x67B,0x2303,&usbserial_driver},
-    
-
-    /*
-     * Ethernet Adapters
-     */
-
-    {USB_DEVICE_CLASS_VENDOR_SPECIFIC,0x506,0x4601,&usbpeg_driver},	/* 3Com */
-    {USB_DEVICE_CLASS_VENDOR_SPECIFIC,0x66b,0x2202,&usbpeg_driver},	/* Linksys */
-    {USB_DEVICE_CLASS_VENDOR_SPECIFIC,0x66b,0x2203,&usbpeg_driver},	/* Linksys */
-    {USB_DEVICE_CLASS_VENDOR_SPECIFIC,0x66b,0x2204,&usbpeg_driver},	/* Linksys */
-    {USB_DEVICE_CLASS_VENDOR_SPECIFIC,0x66b,0x2206,&usbpeg_driver},	/* Linksys */
-    {USB_DEVICE_CLASS_VENDOR_SPECIFIC,0x66b,0x400b,&usbpeg_driver},   	/* Linksys */
-    {USB_DEVICE_CLASS_VENDOR_SPECIFIC,0x66b,0x200c,&usbpeg_driver},	/* Linksys */
-    {USB_DEVICE_CLASS_VENDOR_SPECIFIC,0x423,0x000a,&usbcatc_driver},	/* CATC */
-    {USB_DEVICE_CLASS_VENDOR_SPECIFIC,0x423,0x000c,&usbcatc_driver},	/* Belkin */
-    {USB_DEVICE_CLASS_RESERVED,0xbda,0x8150,&usbrtek_driver},	/* Realtek */
-    {USB_DEVICE_CLASS_RESERVED,0x06e1,0x0008,&usbklsi_driver},	/* Kawasaki */
-
-    {CLASS_ANY,0x0846,0x1040,&usbasix_driver},      /* Netgear FA120 */
-    {CLASS_ANY,0x07B8,0x420a,&usbasix_driver},      /* Hawking UF200 */
-#endif
 
     {0,0,0,NULL}
 };

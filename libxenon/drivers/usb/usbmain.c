@@ -47,11 +47,6 @@
 
 #include <nocfe/cfe.h>
 
-#if CFG_PCI
-#include "pcireg.h"
-#include "pcivar.h"
-#endif
-
 #include "usbmain.h"
 #include "usbchap9.h"
 #include "usbd.h"
@@ -178,53 +173,6 @@ static int usb_init_one_ohci(uint32_t addr)
     return 0;
 }
 
-#if CFG_PCI
-/*  *********************************************************************
-    *  usb_init_pci_ohci()
-    *
-    *  Initialize all PCI-based OHCI controllers
-    *
-    *  Input parameters:
-    *  	   nothing
-    *
-    *  Return value:
-    *  	   0 if ok
-    *  	   else error
-    ********************************************************************* */
-static int usb_init_pci_ohci(void)
-{
-    int res;
-    pcitag_t tag;
-    uint32_t pciclass;
-    phys_addr_t bar;
-    int idx;
-
-    idx = 0;
-
-    while (pci_find_class(PCI_CLASS_SERIALBUS,idx,&tag) == 0) {
-	pciclass = pci_conf_read(tag,PCI_CLASS_REG);
-	if ((PCI_SUBCLASS(pciclass) == PCI_SUBCLASS_SERIALBUS_USB) &&
-	    (PCI_INTERFACE(pciclass) == 0x10)) {
-	    /* On the BCM1250, this sets the address to "match bits" mode,
-	       which eliminates the need for byte swaps of data to/from the registers. */
-	    if (pci_map_mem(tag,PCI_MAPREG_START,PCI_MATCH_BITS,&bar) == 0) {
-		pci_tagprintf(tag,"OHCI USB controller found at %08X\n",(uint32_t) bar);
-		/* XXX hack: assumes physaddrs are 32 bits, bad bad! */
-		res = usb_init_one_ohci((uint32_t)bar);
-		if (res < 0) break;
-		}
-	    else {
-		pci_tagprintf(tag,"Could not map OHCI base address\n");
-		}
-	    }
-	idx++;
-	}
-
-    return 0;
-}
-#endif
-
-
 int usb_initialized = 0;
 
 int usb_init(void)
@@ -259,10 +207,6 @@ int usb_init(void)
 
     kmem_init();
 
-#if CFG_PCI
-	usb_init_pci_ohci();
-#endif
-
 #if 0
 	usb_noisy = 1;
 	ohcidebug = 2;
@@ -279,13 +223,19 @@ int usb_init(void)
 
 void usb_shutdown(void)
 {
+	int n;
+
 	// EHCI
 		// disable interrupts
 	write32(0xEA003028,0);
 	write32(0xEA005028,0);
-		// halt
+		// halt, then wait for HCHalted (USBSTS bit 12), at most 100 ms each
 	write32(0xEA003020,0);
 	write32(0xEA005020,0);
+	for (n = 0; n < 100 && !(read32(0xEA003024) & (1 << 12)); n++)
+		mdelay(1);
+	for (n = 0; n < 100 && !(read32(0xEA005024) & (1 << 12)); n++)
+		mdelay(1);
 
 	// OHCI
 		// disable interrupts

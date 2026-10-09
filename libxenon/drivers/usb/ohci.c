@@ -45,21 +45,7 @@
     ********************************************************************* */
 
 
-#ifndef _CFE_
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <string.h>
-#include <stdint.h>
-#include "usbhack.h"
-#define CPUCFG_COHERENT_DMA 1	/* hack runs on a PC, PCs are coherent */
-#define ENDIAN_BIG 0
-#define ENDIAN_LITTLE 1		/* hack runs on PC, PCs are little endian */
-#include "lib_malloc.h"
-#include "lib_queue.h"
-#else
 #include "cfe.h"
-#endif
 
 #include "usbchap9.h"
 #include "usbd.h"
@@ -84,18 +70,6 @@
 #define BSWAP32(x) (x)
 #endif
 
-#ifndef _CFE_
-extern uint32_t vtop(void *ptr);
-extern void *ptov(uint32_t x);
-#define OHCI_VTOP(ptr) vtop(ptr)
-#define OHCI_PTOV(ptr) ptov(ptr)
-#define OHCI_VTOD(ptr) OHCI_VTOP(ptr)
-#define OHCI_DTOV(ptr) OHCI_PTOV(ptr)
-#define OHCI_WRITECSR(softc,x,y) \
-    *((volatile uint32_t *) ((softc)->ohci_regs + ((x)/sizeof(uint32_t)))) = (y)
-#define OHCI_READCSR(softc,x) \
-    *((volatile uint32_t *) ((softc)->ohci_regs + ((x)/sizeof(uint32_t))))
-#else /* _CFE_ */
 
 #define OHCI_VTOP(ptr) ((uint32_t)PHYSADDR((long)(ptr)))
 
@@ -124,7 +98,6 @@ extern void *ptov(uint32_t x);
     write32(((softc)->ohci_regs + (x)),(y))
 #define OHCI_READCSR(softc,x) \
     read32(((softc)->ohci_regs + (x)))
-#endif /* _CFE_ */
 
 #define OHCI_INVAL_RANGE(s,l)   memdcbf(s,l)
 #define OHCI_FLUSH_RANGE(s,l)   memdcbst(s,l)
@@ -732,6 +705,12 @@ static int ohci_start(usbbus_t *bus)
     softc->ohci_ndp = G_OHCI_RHDSCRA_NDP(reg);
 
     /*
+     * No port power switching and no overcurrent protection (the kernel
+     * writes the same two bits).
+     */
+    OHCI_WRITECSR(softc,R_OHCI_RHDSCRA,reg | M_OHCI_RHDSCRA_NPS | M_OHCI_RHDSCRA_NOCP);
+
+    /*
      * Enable port power
      */
 
@@ -954,7 +933,10 @@ static void ohci_intr_procdoneq(ohci_softc_t *softc, uint32_t donehead)
      * Get the head of the queue
      */
 
-    doneq = BSWAP32(donehead);
+    /* The low bits are not part of the address (bit 0 flags other pending interrupts) */
+    doneq = BSWAP32(donehead) & ~0xF;
+    if (!doneq)
+	return;
 
     td = (ohci_td_t *) OHCI_PTOV(doneq);
     transfer = ohci_transfer_from_td(softc,td);

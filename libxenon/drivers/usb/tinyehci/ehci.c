@@ -248,8 +248,27 @@ handshake_exit:
 #include "ehci-mem.c"
 
 /* one-time init, only for memory state */
+/* halt the controller and reset it, bounded to 100 ms per step */
+static int ehci_hc_reset(struct ehci_hcd * ehci) {
+	int t;
+
+	ehci_writel(ehci_readl(&ehci->regs->command) & ~(CMD_RUN | CMD_ASE | CMD_PSE), &ehci->regs->command);
+	for (t = 0; t < 100 && !(ehci_readl(&ehci->regs->status) & STS_HALT); t++)
+		ehci_msleep(1);
+	if (!(ehci_readl(&ehci->regs->status) & STS_HALT))
+		return -ETIMEDOUT;
+
+	ehci_writel(CMD_RESET, &ehci->regs->command);
+	for (t = 0; t < 100 && (ehci_readl(&ehci->regs->command) & CMD_RESET); t++)
+		ehci_msleep(1);
+	return (ehci_readl(&ehci->regs->command) & CMD_RESET) ? -ETIMEDOUT : 0;
+}
+
 static int ehci_init(struct ehci_hcd * ehci, int default_ctrlr) {
 	int retval;
+
+	if (ehci_hc_reset(ehci) < 0)
+		printf("EHCI bus %d: controller reset timed out, continuing\n", ehci->bus_id);
 
 	if ((retval = ehci_mem_init(ehci)) < 0)
 		return retval;
@@ -271,10 +290,10 @@ static int ehci_init(struct ehci_hcd * ehci, int default_ctrlr) {
 	ehci->command = 0;
 
 	ehci_writel( 0x000000000, &ehci->regs->intr_enable); 
-	ehci_writel( ehci_readl(&ehci->regs->command) | 1, &ehci->regs->command);
-	ehci_writel( 1, &ehci->regs->configured_flag);
 	ehci_writel( ehci->async->qh_dma, &ehci->regs->async_next); 
-	ehci_writel( ehci_readl(&ehci->regs->command) | 0x20, &ehci->regs->command);
+	ehci_writel( ehci_readl(&ehci->regs->command) | CMD_RUN, &ehci->regs->command);
+	ehci_writel( 1, &ehci->regs->configured_flag);
+	ehci_writel( ehci_readl(&ehci->regs->command) | CMD_ASE, &ehci->regs->command);
 
 	return 0;
 }
@@ -334,6 +353,8 @@ static void qh_end_transfer(struct ehci_hcd * ehci) {
 	struct ehci_qh *qh = ehci->asyncqh;
 	u32 token;
 	int error = 0;
+	/* qtd is NULL once the loop is done, so remember the urb for the error report below */
+	struct ehci_urb *urb = qh->qtd_head ? qh->qtd_head->urb : NULL;
 	for (qtd = qh->qtd_head; qtd; qtd = qtd->next) {
 		token = hc32_to_cpu(qtd->hw_token);
 		if (likely(QTD_PID(token) != 2))
@@ -360,9 +381,9 @@ static void qh_end_transfer(struct ehci_hcd * ehci) {
 			error = -1;
 		}
 	}
-	if (error) {
+	if (error && urb) {
 		//dump_qh(ehci->asyncqh);
-		qtd->urb->actual_length = error;
+		urb->actual_length = error;
 	}
 	ehci->qtd_used = 0;
 }
@@ -817,6 +838,13 @@ int ehci_reset_usb_port(struct ehci_hcd * ehci, int port) {
 //		return -ENODEV; // no USB2 device connected
 	}
 
+	/* K state on a connected, not yet enabled port: low speed. Hand it over without a reset. */
+	if ((status & PORT_CONNECT) && !(status & PORT_PE) && PORT_USB11(status)) {
+		printf("EHCI bus %d port %d: low speed, releasing to OHCI\n",ehci->bus_id,port+1);
+		ehci_writel((status | PORT_OWNER) & ~PORT_RWC_BITS, status_reg);
+		return -ENODEV;
+	}
+
 	f = handshake_mode;
 	handshake_mode = 1;
 
@@ -825,13 +853,13 @@ int ehci_reset_usb_port(struct ehci_hcd * ehci, int port) {
 		status &= ~PORT_PE;
 		status |= PORT_RESET | PORT_POWER;
 		ehci_writel(status, status_reg);
-		ehci_msleep(60); // wait 60ms for the reset sequence
+		ehci_msleep(50); // reset signalling time (TDRSTR)
 		status = ehci_readl(status_reg);
 		status &= ~(PORT_RWC_BITS | PORT_RESET); /* force reset to complete */
 		ehci_writel(status, status_reg);
-		ehci_msleep(50);
 		retval = handshake(ehci, status_reg, status_reg,
 				PORT_RESET, 0, 5*1000);
+		ehci_msleep(10); // reset recovery time (TRSTRCY)
 	
 		ehci_dbg("ehci_reset_usb_port handshake retval %d\n",retval);
 	
@@ -864,12 +892,15 @@ int ehci_init_port(struct ehci_hcd * ehci, int port) {
 	int retval = 0;
 	dev->id = 0;
 	int i;
-	ehci_msleep(50);
+	ehci_msleep(10);
 	for (i = 0; i < 3; i++) {
 		// now the device has the default device id
 		retval = ehci_control_message(ehci, dev, USB_CTRLTYPE_DIR_DEVICE2HOST,
 				USB_REQ_GETDESCRIPTOR, USB_DT_DEVICE << 8, 0, sizeof (dev->desc), &dev->desc);
-		//retval=-1;
+		// a high speed device has bMaxPacketSize0 == 64 and a full 18 byte device descriptor
+		if (retval >= 0 && (dev->desc.bLength < 18 || dev->desc.bDescriptorType != USB_DT_DEVICE
+				|| dev->desc.bMaxPacketSize0 != 64))
+			retval = -1;
 		if (retval < 0) {
 			ehci_dbg("unable to get device desc (1)...\n");
 			retval = -2201;

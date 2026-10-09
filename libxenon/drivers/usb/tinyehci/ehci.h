@@ -53,6 +53,7 @@ struct ehci_device {
 	int fd;
 	u32 toggles;
 	int busy;
+	int attempts;	/* enumeration tries since the device was connected */
 };
 #define ep_bit(ep) (((ep)&0xf)+(((ep)>>7)?16:0))
 #define get_toggle(dev,ep) (((dev)->toggles>>ep_bit(ep))&1)

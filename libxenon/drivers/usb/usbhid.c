@@ -385,9 +385,6 @@ static void usbhid_kbd_scan1(usbhid_softc_t *uhid,uint8_t scan,int breakflg)
 #else
 	    printf("%s",str); 
 #endif
-#ifndef _CFE_
-	    fflush(stdout);
-#endif
 	    }
 	}
 

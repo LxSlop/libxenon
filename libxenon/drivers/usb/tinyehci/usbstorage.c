@@ -1231,49 +1231,49 @@ s32 USBStorage_Init(void) {
 
 retry:
 			dev->port = i;
-			if (dev->id != 0 && dev->busy == 0) {
-				handshake_mode = 1;
-				if (ehci_reset_port(ehci, i) >= 0) {
+			if (dev->busy == 0) {
+				u32 status = ehci_readl(&ehci->regs->port_status[i]);
 
-					//ehci_device_data * device_data = find_ehci_data(ehci);
-					
-					ehci_device_data * device_data = &_ehci_data[_ehci_device_count];
-					dev->busy = 1;
-					device_data->__ehci = ehci;
-					device_data->__dev = dev;					
-
-					if (USBStorage_Try_Device(device_data) == 0) {
-						printf("EHCI bus %d device %d: vendor %04X product %04X : Mass-Storage Device\n", j, dev->id, device_data->__vid, device_data->__pid);
-
-						first_access = TRUE;
-						handshake_mode = 0;
-						ums_init_done = 1;
-						unplug_device = 0;
-						//__bdev=register_bdev(NULL, &usb2mass_ops, "uda");
-						//register_disc_interface(&usb2mass_ops);
-						device_data->__ready = 1;
-						if (mount_usb_device)						
-							mount_usb_device(_ehci_device_count);						
-						_ehci_device_count++;
-#ifdef MEM_PRINT
-						s_printf("USBStorage_Init() Ok\n");
-
-#endif
-
-						//return 0;
-					}
+				/* Only act on a newly connected device. Nothing for us on this port: forget it. */
+				if (!(status & PORT_CONNECT) || (status & PORT_OWNER)) {
+					dev->id = 0;
+					dev->attempts = 0;
+					continue;
 				}
-			} else if (dev->busy == 0) {
-				u32 status;
+				/* Gave up on this device, wait for it to be unplugged. */
+				if (dev->attempts >= 3)
+					continue;
+				/* Power debounce before the first reset, like the kernel. */
+				if (dev->attempts++ == 0)
+					ehci_msleep(100);
+
 				handshake_mode = 1;
-				status = ehci_readl(&ehci->regs->port_status[i]);
+				if (dev->id != 0) {
+					if (ehci_reset_port(ehci, i) >= 0) {
 
-#ifdef MEM_PRINT
-				s_printf("USBStorage_Init() status %x\n", status);
+						//ehci_device_data * device_data = find_ehci_data(ehci);
 
-#endif
+						ehci_device_data * device_data = &_ehci_data[_ehci_device_count];
+						dev->busy = 1;
+						device_data->__ehci = ehci;
+						device_data->__dev = dev;
 
-				if (status & 1) {
+						if (USBStorage_Try_Device(device_data) == 0) {
+							printf("EHCI bus %d device %d: vendor %04X product %04X : Mass-Storage Device\n", j, dev->id, device_data->__vid, device_data->__pid);
+
+							first_access = TRUE;
+							handshake_mode = 0;
+							ums_init_done = 1;
+							unplug_device = 0;
+							//__bdev=register_bdev(NULL, &usb2mass_ops, "uda");
+							//register_disc_interface(&usb2mass_ops);
+							device_data->__ready = 1;
+							if (mount_usb_device)
+								mount_usb_device(_ehci_device_count);
+							_ehci_device_count++;
+						}
+					}
+				} else {
 					if (ehci_reset_port2(ehci, i) < 0) {
 						ehci_msleep(100);
 						ehci_reset_port(ehci, i);

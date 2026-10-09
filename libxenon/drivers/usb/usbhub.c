@@ -616,9 +616,6 @@ static void usbhub_reset_device(usbdev_t *dev,int port,usb_port_status_t *portst
 {
     if (usb_noisy > 0)
 	console_log("USB: Resetting device on bus %d port %d",dev->ud_bus->ub_num,port);
-#ifndef _CFE_
-    fflush(stdout);
-#endif
 
     usbhub_set_port_feature(dev,port,USB_PORT_FEATURE_RESET);
 
